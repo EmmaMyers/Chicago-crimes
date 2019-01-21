@@ -1,1 +1,343 @@
+!pip install folium
+!pip install psycopg2
+!pip install area
+!pip install msgpack
+!pip install --upgrade pip
 
+import folium
+from folium import plugins
+from folium.plugins import MarkerCluster
+import psycopg2
+import csv
+import pandas as pd
+import json
+from area import area
+
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT 
+
+cursor = db_connection.cursor()
+
+#Sort algorithms used by the database engines vary in performance between O( NlogN
+# ) and O( N2
+# ) where  N
+#  is the size of the number
+#Search algorithms used by the database engines vary in performance between O( logN
+# ) and O( N
+# ) where  N
+#  is the size of the number
+
+cursor.execute("SELECT district, count(district) from crimes GROUP BY district")
+rows=cursor.fetchall()
+
+crimes_per_district = pd.DataFrame(rows, columns=['dist_num','number_of_crimes'])
+crimes_per_district['dist_num'] = crimes_per_district['dist_num'].astype(str)
+
+crimes_per_district.head()
+
+total_number_of_crimes_per_district_map = folium.Map(location =(41.8781, -87.6298),zoom_start=11)
+
+total_number_of_crimes_per_district_map.choropleth(geo_data="Boundaries.geojson", 
+              fill_color='OrRd', 
+              fill_opacity=0.5, 
+              line_opacity=1,
+              data = crimes_per_district,
+              key_on='feature.properties.dist_num',
+              columns = ['dist_num', 'number_of_crimes']
+              )
+              
+cursor.execute("""SELECT ST_X(ST_AsText(Where_IS)), ST_Y(ST_AsText(Where_IS)), district from police_stations where district!='Headquarters'""")
+police_stations = cursor.fetchall()
+
+for police_station in police_stations:
+    police_station_location = (police_station[0],police_station[1])
+    cursor.execute("SELECT district, count(district) from crimes where district= %s GROUP BY district",[police_station[2]])
+    districts_crime_numbers = cursor.fetchall()
+    for district in districts_crime_numbers:
+        folium.Marker(location = police_station_location,popup=folium.Popup(html="District No : %s  has   Total Number of Crimes:%s" %district ,max_width=450)).add_to(total_number_of_crimes_per_district_map)
+
+#Lets plot the Choropleth map and notice the intensity of color on the different districts
+#The Blue POPUP represents the location of police station in the different districts in the map
+
+total_number_of_crimes_per_district_map
+
+#Calculate the total number of violent crimes in every district and plot that in a table on Choropleth map
+
+#Well, we really need only the violent crimes per district, so we will filter only those crimes that we are interested in. 
+#Please note that we are not interested to plot property crimes, we are really after violent crimes and in particular Gun 
+#related crimes.
+
+#So for now, lets plot violent crimes on Choropleth map and later on we will filter only Gun related crimes
+violent_crime_categories='THEFT','ASSAULT','ROBBERY','KIDNAPPING','CRIM SEXUAL ASSAULT','BATTERY','MURDER'
+
+cursor.execute("SELECT district, count(district) from crimes where PRIMARY_TYPE in %s GROUP BY district",[violent_crime_categories])
+rows=cursor.fetchall()
+violent_crime_data=pd.DataFrame(rows, columns=['district_num','number_of_violent_crimes'])
+violent_crime_data['district_num'] = violent_crime_data['district_num'].astype(str)
+violent_crime_data
+
+violent_crimes_per_district_map= folium.Map(location =(41.8781, -87.6298),zoom_start=11)
+violent_crimes_per_district_map.choropleth(geo_data="Boundaries.geojson", 
+              fill_color='YlOrRd', 
+              fill_opacity=0.5, 
+              line_opacity=1,
+              data = violent_crime_data,
+              key_on='feature.properties.dist_num',
+              columns = ['district_num', 'number_of_violent_crimes'],
+              legend_name="VOILENT CRIME MAP"
+              )
+
+cursor.execute("""SELECT ST_X(ST_AsText(Where_IS)), ST_Y(ST_AsText(Where_IS)), district from police_stations where district!='Headquarters'""")
+police_stations = cursor.fetchall()
+
+for police_station in police_stations:
+    police_station_location =(police_station[0],police_station[1])
+    cursor.execute("SELECT PRIMARY_TYPE, count(PRIMARY_TYPE) from crimes where district =%s AND PRIMARY_TYPE in %s GROUP BY PRIMARY_TYPE",[police_station[2],violent_crime_categories])
+    data = cursor.fetchall()
+    violent_crimes_per_district_df = pd.DataFrame(data, columns=['Description', 'Number of Violent Crimes'])
+    header = violent_crimes_per_district_df.to_html(classes='table table-striped table-hover table-condensed table-responsive')
+    folium.Marker(location=police_station_location, popup=folium.Popup(html="District Number %s - Violent Crimes %s" %(police_station[2],header))).add_to(violent_crimes_per_district_map)
+
+violent_crimes_per_district_map
+
+#Calculate the total number of gun related violent crimes in every district and plot that in a table on Choropleth map
+#Lets first create a dataframe of gun crimes per district first to get an idea about the number of gun crimes per district
+
+gun='%GUN%'
+cursor.execute("SELECT district, count(district) from crimes where DESCRIPTION::text LIKE %s GROUP BY district",[gun])
+districts_gun_violent_crimes = cursor.fetchall()
+districts_gun_violent_crimes_df = pd.DataFrame(districts_gun_violent_crimes, columns=['dist_num','gun_crimes'])
+districts_gun_violent_crimes_df['dist_num'] = districts_gun_violent_crimes_df['dist_num'].astype(str)
+districts_gun_violent_crimes_df
+
+districts_gun_violent_crimes_map = folium.Map(location =(41.8781, -87.6298),zoom_start=11)
+districts_gun_violent_crimes_map.choropleth(geo_data="Boundaries.geojson", 
+              fill_color='YlOrRd', 
+              fill_opacity=0.5, 
+              line_opacity=1,
+              data = districts_gun_violent_crimes_df,
+              key_on='feature.properties.dist_num',
+              columns = ['dist_num', 'gun_crimes'],
+              legend_name="GUN CRIME"
+              )
+
+#Now, lets create a dataframe of the different types of gun crimes for every district and then plot it on Choropleth map
+
+
+cursor.execute("""SELECT ST_X(ST_AsText(Where_IS)), ST_Y(ST_AsText(Where_IS)), district from police_stations where district!='Headquarters'""")
+
+gun='%GUN%'
+police_stations = cursor.fetchall()
+
+for police_station in police_stations:
+    police_station_location = (police_station[0],police_station[1])
+    cursor.execute("""SELECT DESCRIPTION, count(DESCRIPTION) from crimes where district=%s and DESCRIPTION::text LIKE %s GROUP BY DESCRIPTION""",[police_station[2],gun])
+    district_gun_violent_crimes=cursor.fetchall()
+    district_gun_violent_crimes_df=pd.DataFrame(district_gun_violent_crimes, columns=['Description', 'Number of Gun Crime'])
+    header = district_gun_violent_crimes_df.to_html(classes='table table-striped table-hover table-condensed table-responsive')
+    folium.Marker(location=police_station_location,popup=folium.Popup(html="District No: %s GUN_Crime: %s" %(police_station[2],header) )).add_to(districts_gun_violent_crimes_map)
+    
+districts_gun_violent_crimes_map
+
+#Calculate the crime density per district
+
+district=[]
+tarea=[]
+
+with open('Boundaries.geojson') as f:
+    data = json.load(f)
+    a = data['features']
+    for i in range(len(a)):
+        obj=a[i]['geometry']
+        n= a[i]['properties']
+        district.append(n['dist_num'])
+        tarea.append(area(obj)/10000)
+
+af=pd.DataFrame({'dist_num': district,'district_area_inHectares':tarea})
+af['dist_num'] = af['dist_num'].astype(str)
+final_data= pd.merge(af, crimes_per_district, on='dist_num', how='inner')
+final_data['crime_density'] = round(final_data['number_of_crimes']/(final_data['district_area_inHectares']/100))
+final_data
+
+#Create Marker Clusters on Choropleth map for those gun related violent crimes that resulted in arrest (green icon) and those that didn't (red icon)
+gun_crime_arrests_map = folium.Map(location =(41.8781, -87.6298),zoom_start=11)
+gun_crime_arrests_map.choropleth(geo_data="Boundaries.geojson", 
+              fill_color='YlOrRd', 
+              fill_opacity=0.5, 
+              line_opacity=1,
+              data = districts_gun_violent_crimes_df,
+              key_on='feature.properties.dist_num',
+              columns = ['dist_num', 'gun_crimes'],
+              legend_name="GUN CRIME"
+              )
+cursor.execute("""SELECT ST_X(ST_AsText(Where_IS)), ST_Y(ST_AsText(Where_IS)), district from police_stations where district!='Headquarters'""")
+gun='%GUN%'
+
+police_stations = cursor.fetchall()
+
+marker_cluster = MarkerCluster().add_to(gun_crime_arrests_map)
+
+for police_station in police_stations:
+    police_station_location = (police_station[0],police_station[1])
+    cursor.execute("""SELECT DISTINCT ON(caseno) caseno, block,DESCRIPTION, count(arrest), arrest,latitude, longitude from crimes where district=%s and DESCRIPTION::text LIKE %s GROUP BY caseno,block, DESCRIPTION,arrest, latitude, longitude""",[police_station[2],gun])
+    crimes_per_district = cursor.fetchall()
+    for crime in crimes_per_district:
+        if crime[4]==True:
+            folium.Marker(location=(crime[5],crime[6]),popup=folium.Popup(html="District No: %s <br> Description: %s <br> Block: %s" %(police_station[2],crime[2],crime[1])),icon=folium.Icon(color='green', icon='ok-sign'),).add_to(marker_cluster)
+        else:
+            folium.Marker(location=(crime[5],crime[6]),popup=folium.Popup(html="District No: %s <br> Description: %s<br> Block: %s" %(police_station[2],crime[2],crime[1])),icon=folium.Icon(color='red', icon='remove-sign'),).add_to(marker_cluster)
+gun_crime_arrests_map
+
+#Plot on Choropleth map the farthest Block that has a gun crime from every police station in every district
+farthest_block_gun_crime_map = folium.Map(location =(41.8781, -87.6298),zoom_start=11)
+farthest_block_gun_crime_map.choropleth(geo_data="Boundaries.geojson", 
+              fill_color='YlOrRd', 
+              fill_opacity=0.5, 
+              line_opacity=1,
+              data = districts_gun_violent_crimes_df,
+              key_on='feature.properties.dist_num',
+              columns = ['dist_num', 'gun_crimes'],
+              legend_name="GUN CRIME"
+              )
+
+cursor.execute("""SELECT ST_X(ST_AsText(Where_IS)), ST_Y(ST_AsText(Where_IS)), district from police_stations where district!='Headquarters'""")
+police_stations = cursor.fetchall()
+
+gun='%GUN%'
+
+for police_station in police_stations:
+    
+    cursor.execute("""SELECT DISTINCT on (A.block) A.district,A.block, A.where_is,ST_Distance(A.where_is,B.where_is) from crimes as A, police_stations as B 
+    where ST_Distance(A.where_is,B.where_is) in ( SELECT max(dist) FROM 
+    (SELECT ST_Distance(A.where_is,B.where_is) as dist from crimes as A, police_stations as B where A.district=%s 
+    and DESCRIPTION::text LIKE %s and B.district= %s ) as f)""",[police_station[2],gun,police_station[2]])
+    
+    farthest_block_gun_crime = cursor.fetchall()
+
+    cursor.execute("SELECT ST_X(ST_AsText(%s)), ST_Y(ST_AsText(%s))",(farthest_block_gun_crime[0][2],farthest_block_gun_crime[0][2]))
+    farthest_block_gun_crime_location = cursor.fetchall()
+    folium.Marker(location=(police_station[0],police_station[1]),popup=folium.Popup(html="Police Station <br> District No.:%s <br> Farthest Gun_Crime Block:%s"%(farthest_block_gun_crime[0][0],farthest_block_gun_crime[0][1]))).add_to(farthest_block_gun_crime_map)
+    folium.CircleMarker(farthest_block_gun_crime_location[0],radius=5,color='#ff3187',popup=folium.Popup(html="District No.:%s <br> Block:%s"%(farthest_block_gun_crime[0][0],farthest_block_gun_crime[0][1]))).add_to(farthest_block_gun_crime_map) 
+    
+farthest_block_gun_crime_map
+
+#Locate the Block that has the higest number of gun crimes. 
+#The popup on Choropleth map shall display the Block in every district along with the total number of gun crimes for that block
+
+gun='%GUN%'
+cursor.execute("SELECT MAX(A) FROM (SELECT district, count(block) A from crimes where DESCRIPTION::text LIKE %s GROUP BY district, block) as B",[gun])
+districts_gun_violent_crimes = cursor.fetchall()
+
+districts_gun_violent_crimes_map = folium.Map(location =(41.8781, -87.6298),zoom_start=11)
+districts_gun_violent_crimes_map.choropleth(geo_data="Boundaries.geojson", 
+              fill_color='YlOrRd', 
+              fill_opacity=0.5, 
+              line_opacity=1,
+              data = districts_gun_violent_crimes_df,
+              key_on='feature.properties.dist_num',
+              columns = ['dist_num', 'gun_crimes'],
+              legend_name="GUN CRIME"
+              )
+
+cursor.execute("""SELECT ST_X(ST_AsText(Where_IS)), ST_Y(ST_AsText(Where_IS)), district from police_stations where district!='Headquarters'""")
+
+gun='%GUN%'
+police_stations = cursor.fetchall()
+
+for police_station in police_stations:
+    police_station_location = (police_station[0],police_station[1])
+    cursor.execute("""SELECT DESCRIPTION, count(DESCRIPTION) from crimes where district=%s and DESCRIPTION::text LIKE %s GROUP BY DESCRIPTION""",[police_station[2],gun])
+    district_gun_violent_crimes=cursor.fetchall()
+    district_gun_violent_crimes_df=pd.DataFrame(district_gun_violent_crimes, columns=['Description', 'Number of Gun Crime'])
+    header = district_gun_violent_crimes_df.to_html(classes='table table-striped table-hover table-condensed table-responsive')
+    folium.Marker(location=police_station_location,popup=folium.Popup(html="District No: %s GUN_Crime: %s" %(police_station[2],header) )).add_to(districts_gun_violent_crimes_map)
+
+districts_gun_violent_crimes_map
+
+#Calculate the gun crimes density in every district       
+district=[]
+tarea=[]
+
+with open('Boundaries.geojson') as f:
+    data = json.load(f)
+    a = data['features']
+    for i in range(len(a)):
+        obj=a[i]['geometry']
+        n= a[i]['properties']
+        district.append(n['dist_num'])
+        tarea.append(area(obj)/10000)
+
+af=pd.DataFrame({'dist_num': district,'district_area_inHectares':tarea})
+af['dist_num'] = af['dist_num'].astype(str)
+final_data= pd.merge(af, districts_gun_violent_crimes_df, on='dist_num', how='inner')
+final_data['gun_crime_density'] = round(final_data['gun_crimes']/(final_data['district_area_inHectares']/100))
+final_data
+
+#Locate the farthest UNLAWFUL POSS OF HANDGUN crime from the police station in every district. 
+#The popup on Choropleth map shall display the district number and the block
+farthest_unlawful_poss_gun_crime_map = folium.Map(location =(41.8781, -87.6298),zoom_start=11)
+farthest_unlawful_poss_gun_crime_map.choropleth(geo_data="Boundaries.geojson", 
+              fill_color='YlOrRd', 
+              fill_opacity=0.5, 
+              line_opacity=1,
+              data = districts_gun_violent_crimes_df,
+              key_on='feature.properties.dist_num',
+              columns = ['dist_num', 'gun_crimes'],
+              legend_name="GUN CRIME"
+              )
+#Setting up police stations
+cursor.execute("""SELECT ST_X(ST_AsText(Where_IS)), ST_Y(ST_AsText(Where_IS)), district from police_stations where district!='Headquarters'""")
+police_stations = cursor.fetchall()
+
+#setting up unlawful poss of handgun
+gun='%UNLAWFUL POSS OF HANDGUN%'
+
+#for each police station 
+for police_station in police_stations:
+    
+    #calculate the farthest unlawful poss of handgun crime
+    cursor.execute("""SELECT DISTINCT on (A.block) A.district,A.block, A.where_is,ST_Distance(A.where_is,B.where_is) from crimes as A, police_stations as B 
+    where ST_Distance(A.where_is,B.where_is) in ( SELECT max(dist) FROM 
+    (SELECT ST_Distance(A.where_is,B.where_is) as dist from crimes as A, police_stations as B where A.district=%s 
+    and DESCRIPTION::text LIKE %s and B.district= %s ) as f)""",[police_station[2],gun,police_station[2]])
+    
+    farthest_block_gun_crime = cursor.fetchall()
+
+    cursor.execute("SELECT ST_X(ST_AsText(%s)), ST_Y(ST_AsText(%s))",(farthest_block_gun_crime[0][2],farthest_block_gun_crime[0][2]))
+    farthest_block_gun_crime_location = cursor.fetchall()
+    folium.Marker(location=(police_station[0],police_station[1]),popup=folium.Popup(html="Police Station <br> District No.:%s <br> Farthest Gun_Crime Block:%s"%(farthest_block_gun_crime[0][0],farthest_block_gun_crime[0][1]))).add_to(farthest_block_gun_crime_map)
+    folium.CircleMarker(farthest_block_gun_crime_location[0],radius=5,color='#ff3187',popup=folium.Popup(html="District No.:%s <br> Block:%s"%(farthest_block_gun_crime[0][0],farthest_block_gun_crime[0][1]))).add_to(farthest_block_gun_crime_map)
+
+farthest_block_gun_crime_map
+
+#Create Marker Clusters on Choropleth map for those gun related violent crimes 
+#that have Location Desciption as RESIDENCE in (green icon) and those that have Location Desciption as STREET in (red icon)
+gun_crime_map = folium.Map(location =(41.8781, -87.6298),zoom_start=11)
+gun_crime_map.choropleth(geo_data="Boundaries.geojson", 
+              fill_color='YlOrRd', 
+              fill_opacity=0.5, 
+              line_opacity=1,
+              data = districts_gun_violent_crimes_df,
+              key_on='feature.properties.dist_num',
+              columns = ['dist_num', 'gun_crimes'],
+              legend_name="GUN CRIME"
+              )
+cursor.execute("""SELECT ST_X(ST_AsText(Where_IS)), ST_Y(ST_AsText(Where_IS)), district from police_stations where district!='Headquarters'""")
+gun='%GUN%'
+
+police_stations = cursor.fetchall()
+
+marker_cluster = MarkerCluster().add_to(gun_crime_map)
+
+for police_station in police_stations:
+    police_station_location = (police_station[0],police_station[1])
+    cursor.execute("""SELECT DISTINCT ON(caseno) caseno, block, DESCRIPTION, location_description, count(arrest), arrest, latitude, longitude from crimes where district=%s and DESCRIPTION::text LIKE %s GROUP BY caseno, block, DESCRIPTION, location_description, arrest, latitude, longitude""",[police_station[2],gun])
+    crimes_per_district = cursor.fetchall()
+    for crime in crimes_per_district:
+        if crime[4] == 'RESIDENCE':
+            folium.map.Marker(location=(crime[6],crime[7]),popup=folium.Popup(html="District No: %s <br> Description: %s <br> Block: %s" %(police_station[2],crime[2],crime[1])),icon=folium.Icon(color='green', icon='home'),).add_to(marker_cluster)
+        elif crime [4] == 'STREET':
+            folium.map.Marker(location=(crime[6],crime[7]),popup=folium.Popup(html="District No: %s <br> Description: %s<br> Block: %s" %(police_station[2],crime[2],crime[1])),icon=folium.Icon(color='red', icon='business'),).add_to(marker_cluster)
+        else:
+            folium.map.Marker(location=(crime[6],crime[7]),popup=folium.Popup(html="District No: %s <br> Description: %s<br> Block: %s" %(police_station[2],crime[2],crime[1])),icon=folium.Icon(color='blue', icon='remove-sign'),).add_to(marker_cluster)                          
+
+gun_crime_map
